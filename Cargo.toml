@@ -1,0 +1,16 @@
+[package]
+name = "third-dimension"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies.sdl2]
+version = "*"
+features = ["ttf", "image", "gfx", "mixer", "static-link", "use-vcpkg"]
+
+[package.metadata.vcpkg]
+dependencies = ["sdl2", "sdl2-image[libjpeg-turbo,tiff,libwebp]", "sdl2-ttf", "sdl2-gfx", "sdl2-mixer"]
+git = "https://github.com/microsoft/vcpkg"
+rev = "2024.05.24" # release 2024.05.24 # to check for a new one, check https://github.com/microsoft/vcpkg/releases
+
+[dependencies]
+rand = "0.9.1"
