@@ -6,6 +6,8 @@ use sdl2::keyboard::Keycode;
 use sdl2::gfx::primitives::DrawRenderer;
 
 
+const WORLD_UP: Vec3 = Vec3 { x: 0.0, y: 1.0, z: 0.0 };
+
 
 fn main() {
     const RESOLUTION: [u32; 2] = [1200, 700];
@@ -34,71 +36,96 @@ fn main() {
 
     let projection_matrix: Matrix4x4 = Matrix4x4::projection(RESOLUTION[1] as f32 / RESOLUTION[0] as f32, 1.0 / (90.0_f32  * 0.5).to_radians().tan(), 0.1, 1000.0);
 
-    let mut camera_pos: Vec3 = Vec3::new(0.0, 0.0, 0.0);
-    let mut look_direction: Vec3 = Vec3::new(0.0, 0.0, 1.0);
+    let mut camera: Camera = Camera::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.0, 0.0, 0.0);
 
-    let mut yaw: f32 = 0.0;
+    sdl_context.mouse().show_cursor(false);
+
+    let mut mouse_locked = true;
 
     while running {
         let dt = clock.tick();
 
-        window.window_mut().set_title(format!("dt: {:.5}ms, {:.10} mcs, fps: {:.5}", dt.as_millis(), dt.as_micros(), 1.0/dt.as_secs_f32()).as_str()).ok();
-
         for event in events.poll_iter() {
              match event {
                 Event::Quit { .. } => { running = false; },
+                Event::MouseMotion { xrel, yrel, .. } => { 
+                    if mouse_locked {
+                        camera.yaw -= xrel as f32 / 100.0; 
+                        camera.pitch -= yrel as f32 / 100.0;
+                    }
+                },
+                Event::KeyDown { keycode, .. } => {
+                    match keycode.unwrap_or(Keycode::NUM_0) {
+                        Keycode::ESCAPE => { 
+                            mouse_locked = !mouse_locked; 
+                            sdl_context.mouse().show_cursor(!mouse_locked);
+                        },
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
 
         // updating
+        if mouse_locked {
+            sdl_context.mouse().warp_mouse_in_window(&window.window(), RESOLUTION[0] as i32 / 2, RESOLUTION[1] as i32 / 2);
+        }
+
         let speed = 2.0;
         let keys_pressed = input::get_pressed_keys(&events);
 
-        let forward = look_direction;
-        let right = Vec3::new(0.0, 1.0, 0.0).cross(&forward);
-
         if keys_pressed.contains(&Keycode::UP) {
-            camera_pos.y += speed * dt.as_secs_f32();
+            camera.pos.y += speed * dt.as_secs_f32();
         }
         if keys_pressed.contains(&Keycode::DOWN) {
-            camera_pos.y -= speed * dt.as_secs_f32();
+            camera.pos.y -= speed * dt.as_secs_f32();
         }
         if keys_pressed.contains(&Keycode::LEFT) {
-            camera_pos += right * speed * dt.as_secs_f32();
+            camera.pitch -= 1.0 * dt.as_secs_f32();
         }
         if keys_pressed.contains(&Keycode::RIGHT) {
-            camera_pos -= right * speed * dt.as_secs_f32();
+            camera.pitch += 1.0 * dt.as_secs_f32();
         }
         
         if keys_pressed.contains(&Keycode::W) {
-            camera_pos += forward * speed * dt.as_secs_f32();
+            camera.pos += camera.get_front() * speed * dt.as_secs_f32();
         }
         if keys_pressed.contains(&Keycode::S) {
-            camera_pos -= forward * speed * dt.as_secs_f32();
+            camera.pos -= camera.get_front() * speed * dt.as_secs_f32();
         }
-
         if keys_pressed.contains(&Keycode::A) {
-            yaw -= 2.0 * dt.as_secs_f32();
+            camera.pos += camera.get_right() * speed * dt.as_secs_f32();
         }
         if keys_pressed.contains(&Keycode::D) {
-            yaw += 2.0 * dt.as_secs_f32();
+            camera.pos -= camera.get_right() * speed * dt.as_secs_f32();
         }
+        if keys_pressed.contains(&Keycode::SPACE) {
+            camera.pos += WORLD_UP * speed * dt.as_secs_f32();
+        }
+        if keys_pressed.contains(&Keycode::LSHIFT) {
+            camera.pos -= WORLD_UP * speed * dt.as_secs_f32();
+        }
+
+
+        camera.pitch = camera.pitch.clamp(-89.9_f32.to_radians(), 89.9_f32.to_radians());
+        camera.yaw = camera.yaw % (2.0*std::f32::consts::PI);
+
 
         let rotation_z_matrix: Matrix4x4 = Matrix4x4::z_rotation(theta * 0.5);
         let rotation_x_matrix: Matrix4x4 = Matrix4x4::x_rotation(theta);
-        let translation_matrix: Matrix4x4 = Matrix4x4::translation(0.0, 0.0, 16.0);
+        let translation_matrix: Matrix4x4 = Matrix4x4::translation(0.0, -2.0, 4.0);
         let mut world_matrix: Matrix4x4 = rotation_z_matrix * rotation_x_matrix;
         world_matrix = world_matrix * translation_matrix;
 
         // update camera
-        let up: Vec3 = Vec3::new(0.0, 1.0, 0.0);
-        let camera_rotation_matrix = Matrix4x4::y_rotation(yaw);
-        look_direction = Vec3::from_vec4(Vec4::from_vec3(Vec3::new(0.0, 0.0, 1.0), 1.0) * camera_rotation_matrix);
-        let target: Vec3 = camera_pos + look_direction;
+        // let up: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+        // let camera_rotation_matrix = Matrix4x4::y_rotation(yaw) * Matrix4x4::x_rotation(pitch);
+        // camera.look_direction = Vec3::from_vec4(Vec4::from_vec3(Vec3::new(0.0, 0.0, 1.0), 1.0) * camera_rotation_matrix);
+        camera.look_at(camera.yaw, camera.pitch);
+        let target: Vec3 = camera.pos + camera.look_direction;
 
-        let camera: Matrix4x4 = Matrix4x4::point_at(camera_pos, target, up);
-        let view: Matrix4x4 = Matrix4x4::point_at_inverse(&camera);
+        let view: Matrix4x4 = Matrix4x4::point_at_inverse(&Matrix4x4::point_at(camera.pos, target, camera.get_up()));
 
         // draw everything
         window.set_draw_color(Color::RGB(0, 0, 0));
@@ -123,11 +150,11 @@ fn main() {
             );
             normal.normalize();
 
-            let camera_ray = transformed_triangle.points[0] - camera_pos;
+            let camera_ray = transformed_triangle.points[0] - camera.pos;
 
             // Projection
             if normal.dot(&camera_ray) < 0.0 {
-                // Lighting
+                // Lighting (very simple one)
                 let mut light_direction: Vec3 = Vec3::new(0.0, 1.0, -1.0);
                 light_direction.normalize();
 
@@ -223,6 +250,53 @@ pub fn reverse_color(color: Color) -> Color {
 }
 
 
+pub struct Camera {
+    pub pos: Vec3,
+    pub look_direction: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32
+}
+impl Camera {
+    pub fn new(pos: Vec3, look_direction: Vec3, yaw: f32, pitch: f32, roll: f32) -> Self {
+        return Self {
+            pos,
+            look_direction,
+            yaw,
+            pitch,
+            roll
+        }
+    }
+
+    pub fn look_at(&mut self, yaw: f32, pitch: f32) {
+        self.look_direction.x = pitch.cos() * yaw.sin();
+        self.look_direction.y = pitch.sin();
+        self.look_direction.z = pitch.cos() * yaw.cos();
+        self.look_direction.normalize();
+    }
+
+    pub fn get_up(&self) -> Vec3 {
+        let forward = self.get_forward();
+        let right = self.get_right();
+        return forward.cross(&right);
+    }
+
+    pub fn get_right(&self) -> Vec3 {
+        let forward = self.get_forward();
+        return WORLD_UP.cross(&forward).normalized();
+    }
+
+    pub fn get_forward(&self) -> Vec3 {
+        return self.look_direction;
+    }
+
+    // in contrast with `get_forward()`, this function shows where the "front" is. If you're a nerd, imagine it like a vector tied to the XZ plane
+    pub fn get_front(&self) -> Vec3 {
+        return Vec3::new(self.yaw.sin(), 0.0, self.yaw.cos());
+    }
+}
+
+
 #[derive(Copy, Clone)]
 pub struct Vec4 {
     pub x: f32,
@@ -271,6 +345,11 @@ impl Vec3 {
         self.x /= length;
         self.y /= length;
         self.z /= length;
+    }
+
+    pub fn normalized(&self) -> Vec3 {
+        let length = (self.x * self.x + self.y*self.y + self.z*self.z).sqrt();
+        return Vec3::new(self.x / length, self.y / length, self.z / length);
     }
 
     pub fn dot(&self, other: &Vec3) -> f32 {
