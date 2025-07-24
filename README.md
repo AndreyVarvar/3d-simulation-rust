@@ -8,3 +8,10 @@ You can check out their [README](https://github.com/Rust-SDL2/rust-sdl2/blob/mas
 # Running
 Just do `cargo run` to run in debug mode.
 If you want maximum optimization, first do `cargo build --release`, then navigate to `./target/release/` and run `3d-simulation` executable.
+
+# Controls
+WASD - move around
+Space and Left Shift - ascend and descend
+Mouse - look around
+Escape - lock/unlock cursor
+M - toggle render mode

@@ -4,13 +4,23 @@ use sdl2::pixels::Color;
 use sdl2::render::{Canvas, RenderTarget};
 use sdl2::keyboard::Keycode;
 use sdl2::gfx::primitives::DrawRenderer;
+use sdl2::image::LoadTexture;
+use sdl2::render::Texture;
+// use sdl2::pixels::PixelFormatEnum;
 
 
 const WORLD_UP: Vec3 = Vec3 { x: 0.0, y: 1.0, z: 0.0 };
+const RESOLUTION: [u32; 2] = [1200, 700];
+
+#[derive(Eq, PartialEq)]
+enum RenderMode {
+    Outline,
+    Filled,
+    Textured
+}
 
 
 fn main() {
-    const RESOLUTION: [u32; 2] = [1200, 700];
     let sdl_context = sdl2::init().expect("Filed to initialize SDL context.");
     let video_subsystem = sdl_context.video().expect("Failed to initialize SDL video subsystem.");
 
@@ -22,47 +32,74 @@ fn main() {
             .into_canvas()
             .build()
             .expect("Failed to convert window surface.");
+
+    let texture_creator = window.texture_creator();
     
     let mut events = sdl_context.event_pump().expect("Failed to build event pump.");
 
-    let mut clock = clock::Clock::new(99999999);
+    let mut clock = clock::Clock::new(60);
 
     let mut running = true;
 
-    let theta: f32 = 0.0;
+    let brick_texture = texture_creator.load_texture("assets/brick.png").unwrap();
+
+    let mut render_mode: RenderMode = RenderMode::Textured;
 
     // OTHER STUFF
-    let teapot_mesh = Mesh::from_str(include_str!("../assets/teapot.obj").to_string());
+    let mut meshes: Vec<Mesh> = vec![Mesh::cube(), Mesh::cube(), Mesh::load_obj("assets/teapot.obj")];
 
-    let projection_matrix: Matrix4x4 = Matrix4x4::projection(RESOLUTION[1] as f32 / RESOLUTION[0] as f32, 1.0 / (90.0_f32  * 0.5).to_radians().tan(), 0.1, 1000.0);
+    meshes[1].translate(0.0, 2.0, 0.0);
+    meshes[2].translate(5.0, 0.0, 0.0);
 
     let mut camera: Camera = Camera::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.0, 0.0, 0.0);
 
     sdl_context.mouse().show_cursor(false);
 
     let mut mouse_locked = true;
+    let sensitivity: f32 = 1.0;
+
+    // let mut depth_buffer = Surface::new(RESOLUTION[0], RESOLUTION[1], PixelFormatEnum::RGBA32)
+    //         .unwrap()
+    //         .into_canvas()
+    //         .unwrap();
 
     while running {
         let dt = clock.tick();
 
+        window.window_mut().set_title(format!("{}", dt.as_micros()).as_str()).ok();
+
         for event in events.poll_iter() {
              match event {
-                Event::Quit { .. } => { running = false; },
+                Event::Quit { .. } => { running = false; }
+
                 Event::MouseMotion { xrel, yrel, .. } => { 
                     if mouse_locked {
-                        camera.yaw -= xrel as f32 / 100.0; 
-                        camera.pitch -= yrel as f32 / 100.0;
+                        camera.yaw -= xrel as f32 / 100.0 * sensitivity; 
+                        camera.pitch -= yrel as f32 / 100.0 * sensitivity;
                     }
-                },
+                }
+
                 Event::KeyDown { keycode, .. } => {
                     match keycode.unwrap_or(Keycode::NUM_0) {
                         Keycode::ESCAPE => { 
                             mouse_locked = !mouse_locked; 
                             sdl_context.mouse().show_cursor(!mouse_locked);
                         },
+                        Keycode::M => {
+                            if render_mode == RenderMode::Filled {
+                                render_mode = RenderMode::Textured;
+                            }
+                            else if render_mode == RenderMode::Textured {
+                                render_mode = RenderMode::Outline;
+                            }
+                            else {
+                                render_mode = RenderMode::Filled;
+                            }
+                        }
                         _ => {}
                     }
                 }
+
                 _ => {}
             }
         }
@@ -111,21 +148,8 @@ fn main() {
         camera.pitch = camera.pitch.clamp(-89.9_f32.to_radians(), 89.9_f32.to_radians());
         camera.yaw = camera.yaw % (2.0*std::f32::consts::PI);
 
-
-        let rotation_z_matrix: Matrix4x4 = Matrix4x4::z_rotation(theta * 0.5);
-        let rotation_x_matrix: Matrix4x4 = Matrix4x4::x_rotation(theta);
-        let translation_matrix: Matrix4x4 = Matrix4x4::translation(0.0, -2.0, 4.0);
-        let mut world_matrix: Matrix4x4 = rotation_z_matrix * rotation_x_matrix;
-        world_matrix = world_matrix * translation_matrix;
-
         // update camera
-        // let up: Vec3 = Vec3::new(0.0, 1.0, 0.0);
-        // let camera_rotation_matrix = Matrix4x4::y_rotation(yaw) * Matrix4x4::x_rotation(pitch);
-        // camera.look_direction = Vec3::from_vec4(Vec4::from_vec3(Vec3::new(0.0, 0.0, 1.0), 1.0) * camera_rotation_matrix);
         camera.look_at(camera.yaw, camera.pitch);
-        let target: Vec3 = camera.pos + camera.look_direction;
-
-        let view: Matrix4x4 = Matrix4x4::point_at_inverse(&Matrix4x4::point_at(camera.pos, target, camera.get_up()));
 
         // draw everything
         window.set_draw_color(Color::RGB(0, 0, 0));
@@ -133,84 +157,13 @@ fn main() {
 
         let mut triangles_to_draw: Vec<Triangle> = Vec::new();
 
-        for triangle in &teapot_mesh {
-            let transformed_triangle = Triangle::new(
-                Vec3::from_vec4(Vec4::from_vec3(triangle.points[0], 1.0) * world_matrix),
-                Vec3::from_vec4(Vec4::from_vec3(triangle.points[1], 1.0) * world_matrix),
-                Vec3::from_vec4(Vec4::from_vec3(triangle.points[2], 1.0) * world_matrix)
-            );
-
-            let line1 = transformed_triangle.points[1] - transformed_triangle.points[0];
-            let line2 = transformed_triangle.points[2] - transformed_triangle.points[0];
-
-            let mut normal: Vec3 = Vec3::new(
-                line1.y * line2.z - line1.z * line2.y,
-                line1.z * line2.x - line1.x * line2.z,
-                line1.x * line2.y - line1.y * line2.x
-            );
-            normal.normalize();
-
-            let camera_ray = transformed_triangle.points[0] - camera.pos;
-
-            // Projection
-            if normal.dot(&camera_ray) < 0.0 {
-                // Lighting (very simple one)
-                let mut light_direction: Vec3 = Vec3::new(0.0, 1.0, -1.0);
-                light_direction.normalize();
-
-                let dp = light_direction.dot(&normal).max(0.1);
-
-                let color = Color::RGB((dp * 255.0) as u8, (dp * 255.0) as u8, (dp * 255.0) as u8);
-
-                let mut viewed_triangle = Triangle::new(
-                    Vec3::from_vec4(Vec4::from_vec3(transformed_triangle.points[0], 1.0) * view),
-                    Vec3::from_vec4(Vec4::from_vec3(transformed_triangle.points[1], 1.0) * view),
-                    Vec3::from_vec4(Vec4::from_vec3(transformed_triangle.points[2], 1.0) * view)
-                );
-
-                viewed_triangle.set_color(color);
-
-                // clip the triangle against the near plane
-                let clipped_triangles = viewed_triangle.clip_against_plane(Vec3::new(0.0, 0.0, 0.1), Vec3::new(0.0, 0.0, 1.0));
-
-
-                for clipped_triangle in clipped_triangles {
-                    // Actual projection
-                    let projections: [Vec4; 3] = [
-                        Vec4::from_vec3(clipped_triangle.points[0], 1.0) * projection_matrix,
-                        Vec4::from_vec3(clipped_triangle.points[1], 1.0) * projection_matrix,
-                        Vec4::from_vec3(clipped_triangle.points[2], 1.0) * projection_matrix
-                    ];
-
-                    let mut projected_triangle: Triangle = Triangle::new(
-                        Vec3::from_vec4(projections[0]) / Vec3::new(projections[0].w, projections[0].w, projections[0].w),
-                        Vec3::from_vec4(projections[1]) / Vec3::new(projections[1].w, projections[1].w, projections[1].w),
-                        Vec3::from_vec4(projections[2]) / Vec3::new(projections[2].w, projections[2].w, projections[2].w)
-                    );
-                    projected_triangle.set_color(clipped_triangle.get_color());
-
-                    projected_triangle.points[0] *= Vec3::new(-1.0, -1.0, 1.0);
-                    projected_triangle.points[1] *= Vec3::new(-1.0, -1.0, 1.0);
-                    projected_triangle.points[2] *= Vec3::new(-1.0, -1.0, 1.0);
-
-                    // don't ask what is going on over here
-                    let offset = Vec3::new(1.0, 1.0, 0.0);
-                    projected_triangle.points[0] += offset;
-                    projected_triangle.points[1] += offset;
-                    projected_triangle.points[2] += offset;
-
-                    let coef = Vec3::new(0.5 * RESOLUTION[0] as f32, 0.5 * RESOLUTION[1] as f32, 1.0);
-                    projected_triangle.points[0] *= coef;
-                    projected_triangle.points[1] *= coef;
-                    projected_triangle.points[2] *= coef;
-
-                    triangles_to_draw.push(projected_triangle);
-                }
-            }
+        for mesh in &meshes {
+            triangles_to_draw.append(&mut mesh.render(&camera));
         }
 
         triangles_to_draw.sort();
         triangles_to_draw.reverse();
+
         for triangle in triangles_to_draw {
             let mut triangle_list: Vec<Triangle> = Vec::new();
             triangle_list.push(triangle);
@@ -233,9 +186,13 @@ fn main() {
                 }
                 new_triangles = triangle_list.len();
             }
- 
+    
             for triangle in triangle_list {
-                triangle.draw(&mut window);
+                match render_mode {
+                    RenderMode::Outline => { triangle.draw_outline(&mut window, Color::WHITE); },
+                    RenderMode::Textured => { triangle.draw_textured(&mut window, &brick_texture); },
+                    RenderMode::Filled => { triangle.draw(&mut window); }
+                }
             }
         }
 
@@ -244,7 +201,7 @@ fn main() {
 }
 
 
-
+#[cfg(any(target_os = "macos"))]
 pub fn reverse_color(color: Color) -> Color {
     return Color::RGBA(color.a, color.b, color.g, color.r);
 }
@@ -297,6 +254,7 @@ impl Camera {
 }
 
 
+
 #[derive(Copy, Clone)]
 pub struct Vec4 {
     pub x: f32,
@@ -311,6 +269,10 @@ impl Vec4 {
 
     pub fn from_vec3(v: Vec3, w: f32) -> Self {
         return Self::new(v.x, v.y, v.z, w);
+    }
+
+    pub fn xyz(&self) -> Vec3 {
+        return Vec3::new(self.x, self.y, self.z);
     }
 }
 impl std::ops::Mul<Matrix4x4> for Vec4 {
@@ -334,10 +296,6 @@ pub struct Vec3 {
 impl Vec3 {
     pub fn new(x: f32, y: f32, z: f32) -> Self {
         return Self { x, y, z };
-    }
-
-    pub fn from_vec4(v: Vec4) -> Self {
-        return Self::new(v.x, v.y, v.z);
     }
 
     pub fn normalize(&mut self) {
@@ -364,7 +322,7 @@ impl Vec3 {
         );
     }
 
-    pub fn plane_intersect(plane_p: Vec3, mut plane_n: Vec3, line_start: Vec3, line_end: Vec3) -> Self {
+    pub fn plane_intersect(plane_p: Vec3, mut plane_n: Vec3, line_start: Vec3, line_end: Vec3) -> (Self, f32) {
         plane_n.normalize();
         let plane_d = -(plane_n.dot(&plane_p));
         let ad = line_start.dot(&plane_n);
@@ -372,7 +330,7 @@ impl Vec3 {
         let t = (-plane_d - ad) / (bd - ad);
         let line_start_to_end = line_end - line_start;
         let line_to_intersect = line_start_to_end * t;
-        return line_start + line_to_intersect;
+        return (line_start + line_to_intersect, t);
     }
 }
 impl std::ops::Add for Vec3 {
@@ -433,18 +391,53 @@ impl std::fmt::Display for Vec3 {
 }
 
 
+#[derive(Copy, Clone)]
+pub struct Vec2 {
+    pub x: f32,
+    pub y: f32
+}
+impl Vec2 {
+    pub fn new(x: f32, y: f32) -> Self {
+        return Self { x, y };
+    }
+
+    pub fn lerp(&self, v2: Vec2, mut t: f32) -> Vec2 {
+        t = t.clamp(0.0, 1.0);
+        return (v2 - *self) * t + *self;
+    }
+}
+impl std::ops::Add for Vec2 {
+    type Output = Vec2;
+    fn add(self, rhs: Self) -> Self::Output {
+        return Vec2::new(self.x + rhs.x, self.y + rhs.y);
+    }
+}
+impl std::ops::Sub for Vec2 {
+    type Output = Vec2;
+    fn sub(self, rhs: Self) -> Self::Output {
+        return Vec2::new(self.x - rhs.x, self.y - rhs.y);
+    }
+}
+impl std::ops::Mul<f32> for Vec2 {
+    type Output = Vec2;
+    fn mul(self, rhs: f32) -> Self::Output {
+        return Vec2::new(self.x * rhs, self.y * rhs);
+    }
+}
 
 
 #[derive(Copy, Clone)]
 pub struct Triangle {
     pub points: [Vec3; 3],
+    pub texture: [Vec2; 3],
     color: Color
 }
 impl Triangle {
-    pub fn new(p1: Vec3, p2: Vec3, p3: Vec3) -> Self {
+    pub fn new(points: [Vec3; 3], texture: [Vec2; 3], color: Color) -> Self {
         return Self {
-            points: [p1, p2, p3],
-            color: Color::BLACK
+            points,
+            texture,
+            color
         };
     }
 
@@ -456,16 +449,30 @@ impl Triangle {
         return self.color;
     }
 
-    #[cfg(any(target_os = "macos"))]
     pub fn draw<T: RenderTarget>(&self, target: &mut Canvas<T>) {
         target.filled_trigon(self.points[0].x as i16, self.points[0].y as i16, self.points[1].x as i16, self.points[1].y as i16, self.points[2].x as i16, self.points[2].y as i16, reverse_color(self.get_color())).ok();
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    pub fn draw<T: RenderTarget>(&self, target: &mut Canvas<T>) {
-        target.filled_trigon(self.points[0].x as i16, self.points[0].y as i16, self.points[1].x as i16, self.points[1].y as i16, self.points[2].x as i16, self.points[2].y as i16, self.get_color()).ok();
+    pub fn draw_outline<T: RenderTarget>(&self, target: &mut Canvas<T>, color: Color) {
+        target.trigon(self.points[0].x as i16, self.points[0].y as i16, self.points[1].x as i16, self.points[1].y as i16, self.points[2].x as i16, self.points[2].y as i16, reverse_color(color)).ok();
     }
 
+    pub fn draw_textured<T: RenderTarget>(&self, target: &mut Canvas<T>, texture: &Texture) {
+        use sdl2::render::Vertex;
+        use sdl2::render::VertexIndices;
+        use sdl2::rect::FPoint;
+
+        target.render_geometry(
+            &[
+                Vertex { position: FPoint::new(self.points[0].x, self.points[0].y), color: self.color, tex_coord: FPoint::new(self.texture[0].x, self.texture[0].y) },
+                Vertex { position: FPoint::new(self.points[1].x, self.points[1].y), color: self.color, tex_coord: FPoint::new(self.texture[1].x, self.texture[1].y) },
+                Vertex { position: FPoint::new(self.points[2].x, self.points[2].y), color: self.color, tex_coord: FPoint::new(self.texture[2].x, self.texture[2].y) },
+            ],
+            Some(texture),
+            VertexIndices::Sequential
+        ).expect("no textured triangle :(");
+    }
+    
     pub fn midpoint(&self) -> f32 {
         return (self.points[0].z + self.points[1].z + self.points[2].z) / 3.0;
     }
@@ -482,48 +489,74 @@ impl Triangle {
         let mut points_inside: Vec<Vec3> = Vec::new();
         let mut points_outside: Vec<Vec3> = Vec::new();
         let mut points_inside_count = 0;
+        let mut texture_points_inside: Vec<Vec2> = Vec::new();
+        let mut texture_points_outside: Vec<Vec2> = Vec::new();
 
         let d0 = dist(plane_p, plane_n, self.points[0]);
         let d1 = dist(plane_p, plane_n, self.points[1]);
         let d2 = dist(plane_p, plane_n, self.points[2]);
 
 
-        if d0 >= 0.0 { points_inside_count += 1; points_inside.push(self.points[0]); }
-        else { points_outside.push(self.points[0]); }
+        if d0 >= 0.0 { points_inside_count += 1; points_inside.push(self.points[0]); texture_points_inside.push(self.texture[0]); }
+        else { points_outside.push(self.points[0]); texture_points_outside.push(self.texture[0]); }
 
-        if d1 >= 0.0 { points_inside_count += 1; points_inside.push(self.points[1]); }
-        else { points_outside.push(self.points[1]); }
+        if d1 >= 0.0 { points_inside_count += 1; points_inside.push(self.points[1]); texture_points_inside.push(self.texture[1]); }
+        else { points_outside.push(self.points[1]); texture_points_outside.push(self.texture[1]); }
 
-        if d2 >= 0.0 { points_inside_count += 1; points_inside.push(self.points[2]); }
-        else { points_outside.push(self.points[2]); }
+        if d2 >= 0.0 { points_inside_count += 1; points_inside.push(self.points[2]); texture_points_inside.push(self.texture[2]); }
+        else { points_outside.push(self.points[2]); texture_points_outside.push(self.texture[2]); }
 
         if points_inside_count == 1 {
-            let mut new_triangle = Triangle::new(
-                points_inside[0],
-                Vec3::plane_intersect(plane_p, plane_n, points_inside[0], points_outside[0]),
-                Vec3::plane_intersect(plane_p, plane_n, points_inside[0], points_outside[1]),
+            let (p2, t2) = Vec3::plane_intersect(plane_p, plane_n, points_inside[0], points_outside[0]);
+            let (p3, t3) = Vec3::plane_intersect(plane_p, plane_n, points_inside[0], points_outside[1]);
+            let new_triangle = Triangle::new(
+                [
+                    points_inside[0],
+                    p2,
+                    p3
+                ],
+                [
+                    texture_points_inside[0],
+                    texture_points_inside[0].lerp(texture_points_outside[0], t2),
+                    texture_points_inside[0].lerp(texture_points_outside[1], t3)
+                ],
+                self.color
             );
 
-            new_triangle.set_color(self.get_color());
             results.push(new_triangle);
         }
 
         if points_inside_count == 2 {
+            let (p1, t1) = Vec3::plane_intersect(plane_p, plane_n, points_inside[0], points_outside[0]);
+            let (p2, t2) = Vec3::plane_intersect(plane_p, plane_n, points_inside[1], points_outside[0]);
 
-            let mut new_triangle_1 = Triangle::new(
-                points_inside[0],
-                points_inside[1],
-                Vec3::plane_intersect(plane_p, plane_n, points_inside[0], points_outside[0])
+            let new_triangle_1 = Triangle::new(
+                [
+                    points_inside[0],
+                    points_inside[1],
+                    p1
+                ],
+                [
+                    texture_points_inside[0],
+                    texture_points_inside[1],
+                    texture_points_inside[0].lerp(texture_points_outside[0], t1)
+                ],
+                self.color
             );
 
-            let mut new_triangle_2 = Triangle::new(
-                points_inside[1],
-                Vec3::plane_intersect(plane_p, plane_n, points_inside[1], points_outside[0]),
-                Vec3::plane_intersect(plane_p, plane_n, points_inside[0], points_outside[0])
+            let new_triangle_2 = Triangle::new(
+                [
+                    points_inside[1],
+                    p2,
+                    p1
+                ],
+                [
+                    texture_points_inside[1],
+                    texture_points_inside[1].lerp(texture_points_outside[0], t2),
+                    texture_points_inside[0].lerp(texture_points_outside[0], t1)
+                ],
+                self.color
             );
-
-            new_triangle_1.set_color(self.get_color());
-            new_triangle_2.set_color(self.get_color());
 
             results.push(new_triangle_1);
             results.push(new_triangle_2);
@@ -614,9 +647,13 @@ impl Mesh {
             }
             else if i[0] == "f" {
                 let triangle = Triangle::new(
-                    vertices[i[1].parse::<usize>().unwrap() - 1], 
-                    vertices[i[2].parse::<usize>().unwrap() - 1], 
-                    vertices[i[3].parse::<usize>().unwrap() - 1]
+                    [
+                        vertices[i[1].parse::<usize>().unwrap() - 1], 
+                        vertices[i[2].parse::<usize>().unwrap() - 1], 
+                        vertices[i[3].parse::<usize>().unwrap() - 1]
+                    ],
+                    [Vec2::new(0.0, 0.0), Vec2::new(0.0, 0.0), Vec2::new(0.0, 0.0)],
+                    Color::BLACK
                 );
 
                 triangles.push(triangle);
@@ -630,6 +667,135 @@ impl Mesh {
         let content = std::fs::read_to_string(filename).expect(&format!("This file doesn't exist: {}", filename));
 
         return Self::from_str(content);
+    }
+
+    pub fn cube() -> Self {
+        return Self {
+            triangles: vec![
+                Triangle::new([Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)], [Vec2::new(0.0, 1.0), Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)], Color::BLACK),
+                Triangle::new([Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 0.0), Vec3::new(1.0, 0.0, 0.0)], [Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0)], Color::BLACK),
+
+                Triangle::new([Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 0.0), Vec3::new(1.0, 1.0, 1.0)], [Vec2::new(0.0, 1.0), Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)], Color::BLACK),
+                Triangle::new([Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, 0.0, 1.0)], [Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0)], Color::BLACK),
+
+                Triangle::new([Vec3::new(1.0, 0.0, 1.0), Vec3::new(1.0, 1.0, 1.0), Vec3::new(0.0, 1.0, 1.0)], [Vec2::new(0.0, 1.0), Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)], Color::BLACK),
+                Triangle::new([Vec3::new(1.0, 0.0, 1.0), Vec3::new(0.0, 1.0, 1.0), Vec3::new(0.0, 0.0, 1.0)], [Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0)], Color::BLACK),
+
+                Triangle::new([Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 1.0, 1.0), Vec3::new(0.0, 1.0, 0.0)], [Vec2::new(0.0, 1.0), Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)], Color::BLACK),
+                Triangle::new([Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 0.0)], [Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0)], Color::BLACK),
+
+                Triangle::new([Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 1.0), Vec3::new(1.0, 1.0, 1.0)], [Vec2::new(0.0, 1.0), Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)], Color::BLACK),
+                Triangle::new([Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, 1.0, 0.0)], [Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0)], Color::BLACK),
+
+                Triangle::new([Vec3::new(1.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 0.0)], [Vec2::new(0.0, 1.0), Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0)], Color::BLACK),
+                Triangle::new([Vec3::new(1.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)], [Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(1.0, 1.0)], Color::BLACK),
+            ]
+        }
+    }
+
+    pub fn render(&self, camera: &Camera) -> Vec<Triangle> {
+        let mut triangles_to_draw: Vec<Triangle> = Vec::new();
+
+        let target: Vec3 = camera.pos + camera.look_direction;
+        let view: Matrix4x4 = Matrix4x4::point_at_inverse(&Matrix4x4::point_at(camera.pos, target, camera.get_up()));
+        let world_matrix: Matrix4x4 = Matrix4x4::translation(0.0, -2.0, 4.0);
+        let projection_matrix: Matrix4x4 = Matrix4x4::projection(RESOLUTION[1] as f32 / RESOLUTION[0] as f32, 1.0 / (90.0_f32  * 0.5).to_radians().tan(), 0.1, 1000.0);
+
+        for triangle in &self.triangles {
+            let transformed_triangle = Triangle::new(
+                [
+                    (Vec4::from_vec3(triangle.points[0], 1.0) * world_matrix).xyz(),
+                    (Vec4::from_vec3(triangle.points[1], 1.0) * world_matrix).xyz(),
+                    (Vec4::from_vec3(triangle.points[2], 1.0) * world_matrix).xyz()
+                ],
+                triangle.texture,
+                triangle.color
+            );
+
+            let line1 = transformed_triangle.points[1] - transformed_triangle.points[0];
+            let line2 = transformed_triangle.points[2] - transformed_triangle.points[0];
+
+            let mut normal: Vec3 = Vec3::new(
+                line1.y * line2.z - line1.z * line2.y,
+                line1.z * line2.x - line1.x * line2.z,
+                line1.x * line2.y - line1.y * line2.x
+            );
+            normal.normalize();
+
+            let camera_ray = transformed_triangle.points[0] - camera.pos;
+
+            // Projection
+            if normal.dot(&camera_ray) < 0.0 {
+                // Lighting (very simple one)
+                let mut light_direction: Vec3 = Vec3::new(0.0, 1.0, -1.0);
+                light_direction.normalize();
+
+                let dp = light_direction.dot(&normal).max(0.1);
+
+                let color = Color::RGB((dp * 255.0) as u8, (dp * 255.0) as u8, (dp * 255.0) as u8);
+
+                let viewed_triangle = Triangle::new(
+                    [
+                        (Vec4::from_vec3(transformed_triangle.points[0], 1.0) * view).xyz(),
+                        (Vec4::from_vec3(transformed_triangle.points[1], 1.0) * view).xyz(),
+                        (Vec4::from_vec3(transformed_triangle.points[2], 1.0) * view).xyz()
+                    ],
+                    transformed_triangle.texture,
+                    color
+                );
+
+                // clip the triangle against the near plane
+                let clipped_triangles = viewed_triangle.clip_against_plane(Vec3::new(0.0, 0.0, 0.1), Vec3::new(0.0, 0.0, 1.0));
+
+
+                for clipped_triangle in clipped_triangles {
+                    // Actual projection
+                    let projections: [Vec4; 3] = [
+                        Vec4::from_vec3(clipped_triangle.points[0], 1.0) * projection_matrix,
+                        Vec4::from_vec3(clipped_triangle.points[1], 1.0) * projection_matrix,
+                        Vec4::from_vec3(clipped_triangle.points[2], 1.0) * projection_matrix
+                    ];
+
+                    let mut projected_triangle: Triangle = Triangle::new(
+                        [
+                            projections[0].xyz() / Vec3::new(projections[0].w, projections[0].w, projections[0].w),
+                            projections[1].xyz() / Vec3::new(projections[1].w, projections[1].w, projections[1].w),
+                            projections[2].xyz() / Vec3::new(projections[2].w, projections[2].w, projections[2].w)
+                        ],
+                        clipped_triangle.texture,
+                        clipped_triangle.color
+                    );
+                    projected_triangle.set_color(clipped_triangle.get_color());
+
+                    projected_triangle.points[0] *= Vec3::new(-1.0, -1.0, 1.0);
+                    projected_triangle.points[1] *= Vec3::new(-1.0, -1.0, 1.0);
+                    projected_triangle.points[2] *= Vec3::new(-1.0, -1.0, 1.0);
+
+                    // don't ask what is going on over here
+                    let offset = Vec3::new(1.0, 1.0, 0.0);
+                    projected_triangle.points[0] += offset;
+                    projected_triangle.points[1] += offset;
+                    projected_triangle.points[2] += offset;
+
+                    let coef = Vec3::new(0.5 * RESOLUTION[0] as f32, 0.5 * RESOLUTION[1] as f32, 1.0);
+                    projected_triangle.points[0] *= coef;
+                    projected_triangle.points[1] *= coef;
+                    projected_triangle.points[2] *= coef;
+
+                    triangles_to_draw.push(projected_triangle);
+                }
+            }
+        };
+        return triangles_to_draw;
+    }
+
+    pub fn translate(&mut self, dx: f32, dy: f32, dz: f32) {
+        let translation_matrix = Matrix4x4::translation(dx, dy, dz);
+        for triangle in &mut self.triangles {
+            triangle.points[0] = (Vec4::from_vec3(triangle.points[0], 1.0) * translation_matrix).xyz();
+            triangle.points[1] = (Vec4::from_vec3(triangle.points[1], 1.0) * translation_matrix).xyz();
+            triangle.points[2] = (Vec4::from_vec3(triangle.points[2], 1.0) * translation_matrix).xyz();
+        }
     }
 }
 impl<'a> IntoIterator for &'a Mesh {
